@@ -49,3 +49,6 @@ Otherwise-unclassified hidden files & process seperators
 
 ## White
 Default text & otherwise-unclassified visible files
+
+# License
+Licensed under the [GNU GPL v3](LICENSE).
