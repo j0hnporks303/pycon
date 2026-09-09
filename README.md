@@ -2,12 +2,27 @@
 # Install
 git clone https://github.com/j0hnporks303/pycon && cd pycon && ./lzinstall.sh && pycon --help
 
-# pycon
+## pycon
 A python recon utility.
 Gather recon on vulnerabilities in your system, or a system you're authorized to audit. 
 Useful for red team & blue team security ops.
 
-# Colour Codes
+# USAGE
+usage: pycon [-h] [--no-hidden] [--json] [--recon-pid [LIMIT]] [--check-jail] [directory]
+
+Inspect Linux files, directories, and processes. Use --json for JSON output.
+
+positional arguments:
+  directory
+
+options:
+  -h, --help           show this help message and exit
+  --no-hidden
+  --json               output JSON automatically formatted by jq
+  --recon-pid [LIMIT]  inspect processes; omitted LIMIT or 0 means all visible PIDs
+  --check-jail   
+
+## Colour Codes
 # Pink
 Sensitive files such as .env, credentials, SSH keys, certs, also process IDs.
 
@@ -26,7 +41,7 @@ Configuration files, metadata labels, table headings, entry counts, process comm
 # Yellow
 Logs, DBs, backups, filenames containing history
 
-#Green
+# Green
 Archives & compressed
 
 # Gray/Dim
