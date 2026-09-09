@@ -1,7 +1,7 @@
 # pycon
 A python reconnaissance utility.
 Gather reconnaissance on potential vulnerabilities in your system, or a system you're authorized to audit. 
-Useful for opsec hygiene, red ream education & operation utilities
+Useful for opsec hygiene, red ream education & operation utility
 
 ## Install
 git clone https://github.com/j0hnporks303/pycon && cd pycon && ./lzinstall.sh && pycon --help
