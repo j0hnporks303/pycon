@@ -1,14 +1,147 @@
 #!/usr/bin/env python3
-"""Inspect Linux files, directories, and processes. Use --json for JSON output."""
 import argparse
 import grp
 import json
+import os
 import pwd
 import re
 import stat
 import subprocess
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+SECRET_PATTERNS = (
+    ("Credential assignment", re.compile(
+        r'''(?ix)(?<![\w-])["']?[\w-]*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key)'''
+        r'''(?:[_-](?:id|secret|key))?["']?\s*[:=]\s*'''
+        r'''(?:"(?P<double>[^"\r\n]+)"|'(?P<single>[^'\r\n]+)'|(?P<bare>[^\s,;\#}"']+))'''
+    )),
+    ("Private key header", re.compile(
+        r"-----BEGIN (?:(?:RSA|DSA|EC|OPENSSH|ENCRYPTED) )?PRIVATE KEY-----"
+        r"|-----BEGIN PGP PRIVATE KEY BLOCK-----"
+    )),
+    ("URL with credentials", re.compile(
+        r"\b[a-z][a-z0-9+.-]*://[^\s/:@]+:(?P<password>[^\s/@]+)@", re.I,
+    )),
+)
+SECRET_EXCLUDED_DIRS = {".git", ".venv", "venv", "__pycache__"}
+SECRET_PLACEHOLDERS = {"example", "changeme", "redacted", "none", "null", "your_password"}
+
+
+def regex_secret_types(line):
+    for label, pattern in SECRET_PATTERNS:
+        for match in pattern.finditer(line):
+            value = next((value for value in match.groupdict().values() if value), None)
+            if value is not None and (
+                value.lower() in SECRET_PLACEHOLDERS
+                or value.startswith(("$", "<", "{{"))
+            ):
+                continue
+            yield label
+            break
+
+
+def secret_candidates(path, recursive, show_hidden, errors, skipped):
+    pending = [path]
+    while pending:
+        current = pending.pop()
+        st = read_field(errors, f"lstat {current}", current.lstat)
+        if st is None:
+            continue
+        if stat.S_ISDIR(st.st_mode):
+            if current.name in SECRET_EXCLUDED_DIRS:
+                skipped.append({"path": str(current), "reason": "Excluded directory"})
+                continue
+            if current != path and not recursive:
+                skipped.append({"path": str(current), "reason": "Recursion disabled"})
+                continue
+            children = read_field(errors, f"list {current}", lambda: list(current.iterdir()))
+            if children is not None:
+                for child in sorted(children, reverse=True):
+                    if not show_hidden and child.name.startswith("."):
+                        skipped.append({"path": str(child), "reason": "Hidden entry excluded"})
+                    else:
+                        pending.append(child)
+        elif stat.S_ISREG(st.st_mode):
+            yield current
+        else:
+            skipped.append({"path": str(current), "reason": "Symlink or special file"})
+
+
+def read_secret_text(path, max_bytes, skipped):
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "rb") as stream:
+        st = os.fstat(stream.fileno())
+        if not stat.S_ISREG(st.st_mode):
+            skipped.append({"path": str(path), "reason": "Special file"})
+            return None
+        data = stream.read(max_bytes + 1) if st.st_size <= max_bytes else None
+    if data is None or len(data) > max_bytes:
+        skipped.append({"path": str(path), "reason": "File exceeds byte limit"})
+        return None
+    try:
+        if b"\x00" in data:
+            raise UnicodeError
+        return data.decode("utf-8")
+    except UnicodeError:
+        skipped.append({"path": str(path), "reason": "Binary or non-UTF-8 file"})
+        return None
+
+
+def scan_secrets(path, engine="both", recursive=False, show_hidden=True, max_bytes=1048576):
+    scan_lines = None
+    settings_context = nullcontext()
+    if engine in {"both", "detect-secrets"}:
+        try:
+            # Pinned to detect-secrets 1.5.0: use file semantics and context.
+            # Its public scan_line enables eager entropy results without thresholds.
+            from detect_secrets.core.scan import _process_line_based_plugins as scan_lines
+            from detect_secrets.settings import default_settings
+        except ImportError as exc:
+            raise RuntimeError(
+                "detect-secrets is unavailable. Install requirements-secrets.txt with the "
+                "Python used to run pycon, or use --secret-engine regex."
+            ) from exc
+        settings_context = default_settings()
+
+    errors, skipped, findings = [], [], []
+    scanned = 0
+    with settings_context as settings:
+        if settings is not None:
+            # Never contact providers to test discovered credentials
+            settings.disable_filters(
+                "detect_secrets.filters.common.is_ignored_due_to_verification_policies",
+            )
+        for candidate in secret_candidates(path, recursive, show_hidden, errors, skipped):
+            text = read_field(
+                errors, f"read {candidate}",
+                lambda: read_secret_text(candidate, max_bytes, skipped),
+            )
+            if text is None:
+                continue
+            scanned += 1
+            lines = list(enumerate(text.splitlines(), start=1))
+            matches = set()
+            for line_number, line in lines:
+                if engine in {"regex", "both"}:
+                    matches.update((line_number, "regex", label) for label in regex_secret_types(line))
+            if scan_lines is not None:
+                matches.update(
+                    (secret.line_number, "detect-secrets", secret.type)
+                    for secret in scan_lines(lines, filename=str(candidate))
+                )
+            for line_number, detector, label in sorted(matches):
+                findings.append({
+                    "path": str(candidate), "line": line_number, "type": label,
+                    "engine": detector, "preview": "[REDACTED]", "verified": False,
+                })
+    return {
+        "path": str(path), "engine": engine, "recursive": recursive,
+        "max_bytes": max_bytes, "files_scanned": scanned,
+        "findings": findings, "skipped": skipped, "errors": errors,
+    }
 
 
 def read_field(errors, field, operation):
@@ -112,7 +245,6 @@ def enum_processes(limit=0):
     if paths is None:
         return result
 
-    # Avoid is_dir(): a process disappearing must not silently remove its record.
     pids = sorted((p for p in paths if p.name.isdigit()), key=lambda p: int(p.name))
     selected = pids[:limit] if limit else pids
     result["numeric_entries_observed"] = len(pids)
@@ -144,11 +276,10 @@ def enum_processes(limit=0):
                 if separator:
                     item["status"][key] = value.strip()
 
-        # Read link text, including " (deleted)"; do not resolve its target.
         executable = read_field(failures, "exe", (path / "exe").readlink)
         item["executable"] = str(executable) if executable is not None else None
 
-        # Every selected PID gets a record, even when all reads fail.
+        # every selected PID gets a record even if all reads fail
         result["processes"].append(item)
 
     result["returned"] = len(result["processes"])
@@ -170,7 +301,7 @@ def display(value):
 
 
 class Palette:
-    # Only these program-owned SGR sequences are emitted. Data is escaped first.
+    # these SGR sequences data is escaped first.
     codes = {
         "pink": "1;38;5;198",
         "red": "1;91", "blue": "1;94", "purple": "1;38;5;141",
@@ -184,7 +315,6 @@ class Palette:
 
 
 def file_color(name, values=None):
-    """Visual priority by name/type only; no claim about file contents or safety."""
     name = Path(name).name.lower()
     suffix = Path(name).suffix
     values = values or {}
@@ -250,6 +380,21 @@ def print_metadata(values, colors=None):
 
 def print_report(report, colors=None):
     colors = colors or Palette()
+    if "secret_scan" in report:
+        scan = report["secret_scan"]
+        print(colors("Potential secrets (unverified; values redacted)", "pink"))
+        for finding in scan["findings"]:
+            print(
+                f"{colors(finding['path'], 'cyan')}:{finding['line']}: "
+                f"{finding['type']} [{finding['engine']}] {finding['preview']}"
+            )
+        for entry in scan["skipped"]:
+            print(colors(f"Skipped {entry['path']}: {entry['reason']}", "dim"))
+        print_errors(scan["errors"], colors=colors)
+        print(
+            f"Files scanned: {scan['files_scanned']}  Candidates: {len(scan['findings'])}  "
+            f"Skipped: {len(scan['skipped'])}  Errors: {len(scan['errors'])}"
+        )
     if "path_inspection" in report:
         result = report["path_inspection"]
         print(f"Path: {colors(result['path'], file_color(result['path'], result.get('metadata')))}")
@@ -320,8 +465,8 @@ def print_report(report, colors=None):
 def print_json(report):
     payload = json.dumps(report, indent=2, ensure_ascii=True)
     try:
-        # jq writes directly to stdout: terminal colors, plain JSON in pipes.
-        # ASCII output preserves escaping of untrusted non-ASCII controls too.
+        # jq writes directly to stdout terminal colors, plain JSON in pipes
+        # ASCII output preserves escaping of untrusted non-ASCII controls too
         result = subprocess.run(
             ["jq", "--ascii-output", "."], input=payload, encoding="ascii",
         )
@@ -333,19 +478,42 @@ def print_json(report):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description="Inspect Linux files, processes, and potential secrets.")
     parser.add_argument("directory", nargs="?", default=".")
     parser.add_argument("--no-hidden", action="store_true")
     parser.add_argument("--json", action="store_true", help="output JSON automatically formatted by jq")
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--recon-pid", nargs="?", const=0, default=None, type=nonnegative,
         metavar="LIMIT", help="inspect processes; omitted LIMIT or 0 means all visible PIDs",
     )
+    mode.add_argument("--scan-secrets", action="store_true", help="scan file contents; redact findings")
+    parser.add_argument(
+        "--secret-engine", choices=("regex", "detect-secrets", "both"), default="both",
+        help="secret detectors to use (default: both; requires detect-secrets)",
+    )
+    parser.add_argument("--recursive", action="store_true", help="scan secrets in subdirectories too")
+    parser.add_argument(
+        "--max-secret-bytes", type=nonnegative, default=1048576, metavar="BYTES",
+        help="skip secret-scan files larger than this (default: 1048576)",
+    )
     parser.add_argument("--check-jail", action="store_true", help="report detection limitations")
     args = parser.parse_args()
+    if args.recursive and not args.scan_secrets:
+        parser.error("--recursive requires --scan-secrets")
+    if args.max_secret_bytes == 0:
+        parser.error("--max-secret-bytes must be greater than zero")
 
-    report = {"started_at": datetime.now(timezone.utc).isoformat()}
-    if args.recon_pid is not None:
+    report: dict[str, object] = {"started_at": datetime.now(timezone.utc).isoformat()}
+    if args.scan_secrets:
+        try:
+            report["secret_scan"] = scan_secrets(
+                Path(args.directory).expanduser(), args.secret_engine,
+                args.recursive, not args.no_hidden, args.max_secret_bytes,
+            )
+        except RuntimeError as exc:
+            parser.error(str(exc))
+    elif args.recon_pid is not None:
         report["process_scan"] = enum_processes(args.recon_pid)
     else:
         report["path_inspection"] = describe_path(
