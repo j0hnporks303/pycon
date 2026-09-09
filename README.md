@@ -1,9 +1,6 @@
 
 # Install
-git clone https://github.com/j0hnporks303/pycon
-  cd pycon
-  ./lzinstall.sh
-  pycon --help
+git clone https://github.com/j0hnporks303/pycon && cd pycon && ./lzinstall.sh && pycon --help
 
 # pycon
 A python recon utility.
