@@ -10,7 +10,7 @@ import subprocess
 from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
-
+#V1.0.0
 
 SECRET_PATTERNS = (
     ("Credential assignment", re.compile(
