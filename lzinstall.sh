@@ -14,5 +14,5 @@ if [[ -e "$result" || -L "$result" ]]; then
 fi
 
 if [[ ":$PATH:" != *":$target:"* ]]; then
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
+    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc" && echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.zshrc"
 fi
