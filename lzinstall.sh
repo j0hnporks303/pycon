@@ -34,13 +34,18 @@ trap 'rm -f -- "$launcher_tmp"' EXIT
 printf '#!/usr/bin/env bash\nexec %q %q "$@"\n' \
     "$venv_python" "$here/python_pycon_source.py" > "$launcher_tmp" || exit 1
 chmod +x "$launcher_tmp" || exit 1
-mv -fT -- "$launcher_tmp" "$launcher" || exit 1
+# BSD/macOS mv has no -T; reject directories before moving to the exact path.
+if [[ -d "$launcher" ]]; then
+    echo "Launcher destination is a directory; leaving it untouched: $launcher" >&2
+    exit 1
+fi
+mv -f -- "$launcher_tmp" "$launcher" || exit 1
 
 mkdir -p "$target" || exit 1
 if [[ -L "$result" ]]; then
-    ln -sfnT -- "$launcher" "$result" || exit 1
+    ln -sfn -- "$launcher" "$result" || exit 1
 else
-    ln -sT -- "$launcher" "$result" || exit 1
+    ln -s -- "$launcher" "$result" || exit 1
 fi
 echo "Installed pycon with detect-secrets to $result"
 
