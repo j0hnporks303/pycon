@@ -4,11 +4,15 @@ Gather reconnaissance on potential vulnerabilities in your system, or a system y
 Useful for opsec hygiene, red ream education & operation utility
 
 # Install
-git clone https://github.com/j0hnporks303/pycon
-cd pycon
-./lzinstall.sh
-"$HOME/.local/bin/pycon" --help
+Download or clone the full repository, then run ./install.sh from the project directory.
+Requires Python 3 with venv support. The installer creates the virtual environment, installs dependencies & sets up the 'pycon' command.
 
+# Compatibility
+Linux is the target platform.
+
+macOS compatibility still needs testing. Process inspection (`--recon-pid`) relies on Linux's `/proc` filesystem and does not work on standard macOS.
+
+Native Windows is not currently supported. The program imports the Unix-only `grp` and `pwd` modules at startup, and the installer requires Bash. Windows support needs code changes as well as testing.
 
 # Usage
 usage: pycon [-h] [--no-hidden] [--json] [--recon-pid [LIMIT] | --scan-secrets]
@@ -60,18 +64,6 @@ Otherwise-unclassified hidden files & process seperators
 
 ## White
 Default text & otherwise-unclassified visible files
-
-# Secret scanning
-
-Scan a file or a directory for potential credentials using the built-in `re`
-patterns, with no additional dependencies:
-
-If you prefer to run directly without the installer, set up the environment manually:
-
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements-secrets.txt
-.venv/bin/python python_pycon_source.py ./project --scan-secrets --recursive
-.venv/bin/python python_pycon_source.py ./project --scan-secrets --recursive --json
 
 # License
 Licensed under the [GNU GPL v3](LICENSE).
