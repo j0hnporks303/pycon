@@ -3,13 +3,6 @@ A python reconnaissance utility.
 Gather reconnaissance on potential vulnerabilities in your system, or a system you're authorized to audit. 
 Useful for opsec hygiene, red ream education & operation utility
 
-# Install
-git clone https://github.com/j0hnporks303/pycon
-cd pycon
-./lzinstall.sh
-"$HOME/.local/bin/pycon" --help
-
-
 # Usage
 usage: pycon [-h] [--no-hidden] [--json] [--recon-pid [LIMIT] | --scan-secrets]
              [--secret-engine {regex,detect-secrets,both}] [--recursive] [--max-secret-bytes BYTES] [--check-jail]
@@ -60,18 +53,6 @@ Otherwise-unclassified hidden files & process seperators
 
 ## White
 Default text & otherwise-unclassified visible files
-
-# Secret scanning
-
-Scan a file or a directory for potential credentials using the built-in `re`
-patterns, with no additional dependencies:
-
-If you prefer to run directly without the installer, set up the environment manually:
-
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements-secrets.txt
-.venv/bin/python python_pycon_source.py ./project --scan-secrets --recursive
-.venv/bin/python python_pycon_source.py ./project --scan-secrets --recursive --json
 
 # License
 Licensed under the [GNU GPL v3](LICENSE).
