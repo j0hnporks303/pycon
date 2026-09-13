@@ -4,7 +4,7 @@ Gather reconnaissance on potential vulnerabilities in your system, or a system y
 Useful for opsec hygiene, red ream education & operation utility
 
 # Install
-Download or clone the full repository, then run ./install.sh from the project directory.
+Download or clone the full repository, then run './install.sh' from the project directory.
 Requires Python 3 with venv support. The installer creates the virtual environment, installs dependencies & sets up the 'pycon' command.
 
 # Compatibility
