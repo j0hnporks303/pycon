@@ -7,6 +7,7 @@ import pwd
 import re
 import stat
 import subprocess
+import sys
 from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
@@ -239,6 +240,14 @@ def describe_path(path, show_hidden=True):
 
 
 def enum_processes(limit=0):
+    if sys.platform == "linux":
+        return enum_linux_processes(limit)
+    if sys.platform == "darwin":
+        return enum_macos_processes(limit)
+    raise RuntimeError("Process inspection supports Linux and macOS only.")
+
+
+def enum_linux_processes(limit=0):
     errors = []
     result = {"processes": [], "errors": errors}
     paths = read_field(errors, "list_proc", lambda: list(Path("/proc").iterdir()))
@@ -281,6 +290,75 @@ def enum_processes(limit=0):
 
         # every selected PID gets a record even if all reads fail
         result["processes"].append(item)
+
+    result["returned"] = len(result["processes"])
+    return result
+
+
+def enum_macos_processes(limit=0):
+    try:
+        import psutil
+    except ImportError as exc:
+        raise RuntimeError(
+            "macOS process inspection requires psutil. Run ./install.sh, or install "
+            "requirements.txt with the Python used to run pycon."
+        ) from exc
+
+    def read_process_field(errors, field, operation):
+        try:
+            return operation()
+        except (psutil.Error, OSError) as exc:
+            errors.append({
+                "field": field,
+                "type": type(exc).__name__,
+                "errno": getattr(exc, "errno", None),
+                "message": str(exc),
+            })
+            return None
+
+    errors = []
+    result = {
+        "processes": [], "errors": errors, "returned": 0,
+        "platform": "darwin", "backend": "psutil",
+        "limitations": [
+            "macOS reports native process fields; Linux /proc/status fields are unavailable.",
+            "Process visibility depends on OS permissions; denied or exited processes retain error records.",
+        ],
+    }
+    pids = read_process_field(errors, "list_pids", lambda: sorted(psutil.pids()))
+    if pids is None:
+        return result
+    selected = pids[:limit] if limit else pids
+    result["numeric_entries_observed"] = len(pids)
+    result["omitted_by_limit"] = len(pids) - len(selected)
+
+    for pid in selected:
+        item = {
+            "pid": pid, "argv": None, "cmdline": None,
+            "executable": None, "status": None, "errors": [],
+        }
+        result["processes"].append(item)
+        failures = item["errors"]
+        process = read_process_field(failures, "process", lambda: psutil.Process(pid))
+        if process is None:
+            continue
+
+        item["argv"] = read_process_field(failures, "cmdline", process.cmdline)
+        if item["argv"] is not None:
+            item["cmdline"] = " ".join(item["argv"])
+        item["executable"] = read_process_field(failures, "exe", process.exe) or None
+        item["status"] = {
+            label: read_process_field(failures, label, operation)
+            for label, operation in (
+                ("Name", process.name), ("State", process.status),
+                ("PPid", process.ppid), ("User", process.username),
+                ("Threads", process.num_threads),
+            )
+        }
+        for label, operation in (("UID", process.uids), ("GID", process.gids)):
+            ids = read_process_field(failures, label, operation)
+            for kind in ("real", "effective", "saved"):
+                item["status"][f"{label} ({kind})"] = getattr(ids, kind) if ids is not None else None
 
     result["returned"] = len(result["processes"])
     return result
@@ -440,6 +518,8 @@ def print_report(report, colors=None):
 
     if "process_scan" in report:
         scan = report["process_scan"]
+        for limitation in scan.get("limitations", []):
+            print(colors(limitation, "dim"))
         print_errors(scan["errors"], colors=colors)
         for process in scan["processes"]:
             print(colors(f"PID:        {process['pid']}", "pink"))
@@ -478,7 +558,7 @@ def print_json(report):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Inspect Linux files, processes, and potential secrets.")
+    parser = argparse.ArgumentParser(description="Inspect Linux and macOS files, processes, and potential secrets.")
     parser.add_argument("directory", nargs="?", default=".")
     parser.add_argument("--no-hidden", action="store_true")
     parser.add_argument("--json", action="store_true", help="output JSON automatically formatted by jq")
@@ -514,7 +594,10 @@ def main():
         except RuntimeError as exc:
             parser.error(str(exc))
     elif args.recon_pid is not None:
-        report["process_scan"] = enum_processes(args.recon_pid)
+        try:
+            report["process_scan"] = enum_processes(args.recon_pid)
+        except RuntimeError as exc:
+            parser.error(str(exc))
     else:
         report["path_inspection"] = describe_path(
             Path(args.directory).expanduser(), not args.no_hidden,
@@ -523,7 +606,8 @@ def main():
     if args.check_jail:
         report["jail_check"] = {
             "jailed_or_sandboxed": None,
-            "reason": "Comparing / with /proc/self/root cannot reliably detect confinement.",
+            "reason": "No reliable sandbox or container detection is implemented. "
+                      "File and process visibility depends on OS permissions and restrictions.",
         }
     report["finished_at"] = datetime.now(timezone.utc).isoformat()
     if args.json:

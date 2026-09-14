@@ -1,0 +1,30 @@
+name: Tests
+
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ['3.10', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install in an isolated home and check launcher
+        shell: bash
+        run: |
+          pycon_test_home="$(mktemp -d)"
+          bash -n install.sh
+          env HOME="$pycon_test_home" bash install.sh
+          "$pycon_test_home/.local/bin/pycon" --help
+          env HOME="$pycon_test_home" bash install.sh
+      - name: Run tests, including native process inspection
+        run: .venv/bin/python -B -m unittest discover -s tests -v
