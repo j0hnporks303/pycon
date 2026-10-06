@@ -18,13 +18,32 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - name: Install in an isolated home and check launcher
+      - name: Install system copy and check command
         shell: bash
         run: |
           pycon_test_home="$(mktemp -d)"
           bash -n install.sh
+          bash -n uninstall.sh
           env HOME="$pycon_test_home" bash install.sh
-          "$pycon_test_home/.local/bin/pycon" --help
+          test -f /usr/local/bin/pycon
+          test ! -L /usr/local/bin/pycon
+          python - <<'PY'
+          from pathlib import Path
+          import stat
+          for path in (Path('/usr/local/bin/pycon'), Path('/usr/local/lib/pycon')):
+              info = path.stat()
+              assert info.st_uid == 0, path
+              assert not info.st_mode & (stat.S_IWGRP | stat.S_IWOTH), path
+          PY
+          /usr/local/bin/pycon --help
+          sudo /usr/local/bin/pycon --help
+          sudo -i /usr/local/bin/pycon --help
           env HOME="$pycon_test_home" bash install.sh
       - name: Run tests, including native process inspection
-        run: .venv/bin/python -B -m unittest discover -s tests -v
+        run: /usr/local/lib/pycon/venv/bin/python -B -m unittest discover -s tests -v
+      - name: Uninstall system copy
+        shell: bash
+        run: |
+          bash uninstall.sh
+          test ! -e /usr/local/bin/pycon
+          test ! -e /usr/local/lib/pycon

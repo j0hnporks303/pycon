@@ -5,9 +5,13 @@ Useful for opsec hygiene, red ream education & operation utility
 
 # Install
 Download or clone the full repository, then run './install.sh' from the project directory.
-Requires Python 3.10 or newer with venv support. The installer creates the virtual environment, installs dependencies & sets up the 'pycon' command.
-Use a fresh virtual environment on each machine; do not copy `.venv` between Linux and macOS.
-For manual dependency installation, use `python3 -m pip install -r requirements.txt` in your virtual environment.
+Requires an administrator-managed Python 3.10 or newer with venv support. The installer uses sudo to copy the Python program into `/usr/local/bin/pycon` as a root-owned executable file and install its dependencies into a root-owned environment at `/usr/local/lib/pycon/venv`.
+The installed command runs independently of the checkout and its `.venv`, using isolated Python imports. Existing links from this checkout are migrated to the copied installation; unrelated installations are preserved.
+For development, create a separate `.venv` in the checkout and run `python3 -m pip install -r requirements.txt` in that environment.
+
+# Uninstall
+Run `./uninstall.sh`. It removes the managed `/usr/local/bin/pycon` file and `/usr/local/lib/pycon` runtime, requesting sudo when needed. It also supports removing old links from the same checkout.
+Project files, `.venv`, and shell PATH settings are kept.
 
 # Update
 Once the updated files have been committed & pushed to GitHub, open a terminal in your existing pycon.d project directory and run:
@@ -16,7 +20,7 @@ Once the updated files have been committed & pushed to GitHub, open a terminal i
 git pull --ff-only && ./install.sh
 ```
 
-Works the same on Linux & macOS. The installer updates dependencies in the project's virtual environment & refreshes the 'pycon' command.
+Works the same on Linux & macOS. The installer updates the system runtime's dependencies and replaces the installed program with a fresh copy. Editing the checkout takes effect only after reinstalling.
 If Git reports local changes or diverging branches, resolve those before retrying; do not force the pull.
 
 Check the updated version:
