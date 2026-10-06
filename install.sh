@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 here="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
-target="$HOME/.local/bin"
+target="/usr/local/bin"
 result="$target/pycon"
 venv_python="$here/.venv/bin/python"
 launcher="$here/.venv/bin/pycon"
@@ -41,7 +41,7 @@ launcher_tmp="$(mktemp "$here/.venv/bin/.pycon.XXXXXX")" || exit 1
 trap 'rm -f "$launcher_tmp"' EXIT
 printf '#!/usr/bin/env bash\nexec %q %q "$@"\n' \
     "$venv_python" "$here/python_pycon_source.py" > "$launcher_tmp" || exit 1
-chmod +x "$launcher_tmp" || exit 1
+chmod 755 "$launcher_tmp" || exit 1
 # BSD/macOS mv has no -T; reject directories before moving to the exact path.
 if [[ -d "$launcher" ]]; then
     echo "Launcher destination is a directory; leaving it untouched: $launcher" >&2
@@ -49,16 +49,20 @@ if [[ -d "$launcher" ]]; then
 fi
 mv -f "$launcher_tmp" "$launcher" || exit 1
 
-mkdir -p "$target" || exit 1
+elevated=()
+if [[ "$EUID" -ne 0 ]]; then
+    elevated=(sudo)
+fi
+"${elevated[@]}" mkdir -p "$target" || exit 1
 if [[ -L "$result" ]]; then
-    ln -sfn "$launcher" "$result" || exit 1
+    "${elevated[@]}" ln -sfn "$launcher" "$result" || exit 1
 else
-    ln -s "$launcher" "$result" || exit 1
+    "${elevated[@]}" ln -s "$launcher" "$result" || exit 1
 fi
 echo "Installed pycon with platform dependencies to $result"
 
-if [[ ":$PATH:" != *":$target:"* ]]; then
-    path_line='export PATH="$HOME/.local/bin:$PATH"'
+if [[ ":$PATH:" != *":$target:"* ]] && [[ "$EUID" -ne 0 ]]; then
+    path_line=$'export PATH="/usr/local/bin:$PATH"'
     for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
         touch "$rc" || exit 1
         if ! grep -Fxq -- "$path_line" "$rc"; then
