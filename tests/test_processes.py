@@ -180,7 +180,7 @@ class NativeProcessTests(unittest.TestCase):
         self.assertEqual(report["processes"][0]["errors"], [])
         self.assertEqual(report["processes"][0]["status"]["UID (real)"], os.getuid())
 
-    def test_process_cli_json_and_neutral_jail_message(self):
+    def test_process_cli_json_and_jail_evidence(self):
         result = subprocess.run(
             [sys.executable, str(Path(pycon.__file__).resolve()), "--recon-pid", "1",
              "--check-jail", "--json"], capture_output=True, text=True, timeout=15,
@@ -188,8 +188,12 @@ class NativeProcessTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         report = json.loads(result.stdout)
         self.assertEqual(report["process_scan"]["returned"], 1)
-        self.assertIsNone(report["jail_check"]["jailed_or_sandboxed"])
-        self.assertNotIn("/proc", report["jail_check"]["reason"])
+        check = report["jail_check"]
+        self.assertIs(check["jailed_or_sandboxed"], True if check["indicators"] else None)
+        self.assertEqual(check["scope"], "current_process")
+        self.assertEqual(check["platform"], sys.platform)
+        self.assertIsInstance(check["errors"], list)
+        self.assertTrue(check["limitations"])
 
 
 if __name__ == "__main__":

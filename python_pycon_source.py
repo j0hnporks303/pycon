@@ -364,6 +364,141 @@ def enum_macos_processes(limit=0):
     return result
 
 
+def check_jail():
+    report = {
+        "platform": sys.platform, "scope": "current_process",
+        "jailed_or_sandboxed": None, "indicators": [], "observations": {}, "errors": [],
+        "limitations": [
+            "Checks describe the current pycon process, not every inspected PID.",
+            "No detected indicators does not prove unrestricted access; some isolation is not visible.",
+        ],
+    }
+    if sys.platform == "linux":
+        check_linux_jail(report)
+    elif sys.platform == "darwin":
+        check_macos_jail(report)
+    else:
+        report["limitations"].append("Jail checks support Linux and macOS only.")
+
+    if report["indicators"]:
+        report["jailed_or_sandboxed"] = True
+        report["reason"] = "Isolation indicators detected; inspect the evidence and limitations below."
+    elif report["errors"]:
+        report["reason"] = "No isolation indicators detected, but some checks could not be completed."
+    else:
+        report["reason"] = "No supported isolation indicators detected; confinement cannot be ruled out."
+    return report
+
+
+def check_linux_jail(report):
+    errors, indicators = report["errors"], report["indicators"]
+
+    def read_text(name, optional=False):
+        def read():
+            try:
+                return Path(name).read_text(encoding="utf-8", errors="replace")
+            except FileNotFoundError:
+                if optional:
+                    return ""
+                raise
+        return read_field(errors, name, read)
+
+    def marker_exists(name):
+        try:
+            return stat.S_ISREG(Path(name).lstat().st_mode)
+        except FileNotFoundError:
+            return False
+
+    for name, runtime in (("/.dockerenv", "Docker"), ("/run/.containerenv", "Podman")):
+        present = read_field(errors, name, lambda: marker_exists(name))
+        report["observations"][name] = present
+        if present:
+            indicators.append({"kind": "container", "source": name,
+                               "detail": f"{runtime} container marker is present."})
+
+    runtime = read_text("/run/systemd/container", optional=True)
+    report["observations"]["systemd_container"] = runtime.strip() if runtime is not None else None
+    if runtime and runtime.strip():
+        indicators.append({"kind": "container", "source": "/run/systemd/container",
+                           "detail": f"Container manager reports: {runtime.strip()}"})
+
+    cgroups = read_text("/proc/self/cgroup")
+    report["observations"]["cgroup_runtimes"] = [] if cgroups is not None else None
+    if cgroups is not None:
+        paths = [line.split(":", 2)[2] for line in cgroups.splitlines() if line.count(":") >= 2]
+        for runtime, pattern in (
+            ("Docker", r"(?:^|/)(?:docker/[0-9a-f]{12,64}|docker-[0-9a-f]{12,64}\.scope)(?:/|$)"),
+            ("Podman", r"(?:^|/)libpod-[0-9a-f]{12,64}\.scope(?:/|$)"),
+            ("Kubernetes", r"(?:^|/)kubepods(?:[/.\-]|$)"),
+            ("LXC", r"(?:^|/)lxc(?:/|\.payload[./])"),
+        ):
+            if any(re.search(pattern, path) for path in paths):
+                report["observations"]["cgroup_runtimes"].append(runtime)
+                indicators.append({"kind": "container", "source": "/proc/self/cgroup",
+                                   "detail": f"{runtime} cgroup membership detected."})
+
+    status = read_text("/proc/self/status")
+    fields = {}
+    if status is not None:
+        fields = {key: value.strip() for line in status.splitlines()
+                  for key, separator, value in (line.partition(":"),) if separator}
+    report["observations"]["process_status"] = {
+        key: fields.get(key) for key in ("Seccomp", "Seccomp_filters", "NoNewPrivs", "NSpid")
+    }
+    if fields.get("Seccomp") in {"1", "2"}:
+        mode = "strict" if fields["Seccomp"] == "1" else "filter"
+        indicators.append({"kind": "seccomp", "source": "/proc/self/status:Seccomp",
+                           "detail": f"Seccomp {mode} mode is active."})
+    namespace_pids = fields.get("NSpid", "").split()
+    if len(namespace_pids) > 1 and all(pid.isdecimal() for pid in namespace_pids):
+        indicators.append({"kind": "pid_namespace", "source": "/proc/self/status:NSpid",
+                           "detail": "The process is in a nested PID namespace relative to this procfs mount."})
+
+    root = read_field(errors, "stat /", Path("/").stat)
+    init_root = read_field(errors, "stat /proc/1/root", Path("/proc/1/root").stat)
+    different_root = None
+    if root is not None and init_root is not None:
+        different_root = (root.st_dev, root.st_ino) != (init_root.st_dev, init_root.st_ino)
+        if different_root:
+            indicators.append({"kind": "root_directory", "source": "/ versus /proc/1/root",
+                               "detail": "Root differs from visible PID 1; possible chroot or mount namespace isolation."})
+    report["observations"]["root_differs_from_pid1"] = different_root
+    report["limitations"].extend([
+        "Container markers and cgroup names are heuristics; they can be hidden or forged.",
+        "PID 1 may share the same confinement; matching roots or a single NSpid do not exclude isolation.",
+        "Seccomp mode does not reveal which syscalls are allowed. NoNewPrivs alone is not proof of a sandbox.",
+    ])
+
+
+def check_macos_jail(report):
+    # Runtime Seatbelt check, also used by Chromium's sandbox/mac/seatbelt.cc.
+    # This is a private system API: missing libraries/symbols remain unknown.
+    import ctypes
+
+    source = "sandbox_check(getpid(), NULL, 0)"
+    report["observations"]["seatbelt_sandboxed"] = None
+    try:
+        library = ctypes.CDLL("/usr/lib/system/libsystem_sandbox.dylib", use_errno=True)
+        check = library.sandbox_check
+        check.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+        check.restype = ctypes.c_int
+        ctypes.set_errno(0)
+        result = check(os.getpid(), None, 0)
+        if result not in {0, 1}:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error) if error else f"Unexpected sandbox_check result: {result}")
+        report["observations"]["seatbelt_sandboxed"] = bool(result)
+        if result == 1:
+            report["indicators"].append({"kind": "seatbelt", "source": source,
+                                         "detail": "macOS reports an active Seatbelt sandbox."})
+    except (OSError, AttributeError) as exc:
+        report["errors"].append({"field": source, "type": type(exc).__name__,
+                                 "errno": getattr(exc, "errno", None), "message": str(exc)})
+    report["limitations"].append(
+        "The macOS check uses a private Seatbelt API and cannot rule out chroots, TCC, or other restrictions."
+    )
+
+
 def nonnegative(value):
     number = int(value)
     if number < 0:
@@ -539,7 +674,14 @@ def print_report(report, colors=None):
         )
 
     if "jail_check" in report:
-        print(f"Jailed/sandboxed: unknown. {report['jail_check']['reason']}")
+        check = report["jail_check"]
+        status = "indicators detected" if check["jailed_or_sandboxed"] else "unknown"
+        print(f"Jailed/sandboxed: {status}. {display(check['reason'])}")
+        for indicator in check["indicators"]:
+            print(colors(f"  {indicator['kind']}: {indicator['detail']} [{indicator['source']}]", "cyan"))
+        print_errors(check["errors"], colors=colors)
+        for limitation in check["limitations"]:
+            print(colors(f"  Limitation: {limitation}", "dim"))
 
 
 def print_json(report):
@@ -577,7 +719,7 @@ def main():
         "--max-secret-bytes", type=nonnegative, default=1048576, metavar="BYTES",
         help="skip secret-scan files larger than this (default: 1048576)",
     )
-    parser.add_argument("--check-jail", action="store_true", help="report detection limitations")
+    parser.add_argument("--check-jail", action="store_true", help="check current process for sandbox/container indicators")
     args = parser.parse_args()
     if args.recursive and not args.scan_secrets:
         parser.error("--recursive requires --scan-secrets")
@@ -604,11 +746,7 @@ def main():
         )
 
     if args.check_jail:
-        report["jail_check"] = {
-            "jailed_or_sandboxed": None,
-            "reason": "No reliable sandbox or container detection is implemented. "
-                      "File and process visibility depends on OS permissions and restrictions.",
-        }
+        report["jail_check"] = check_jail()
     report["finished_at"] = datetime.now(timezone.utc).isoformat()
     if args.json:
         print_json(report)
